@@ -1,0 +1,173 @@
+WEBSHOP INTEGRÁCIÓS JEGYZETEK
+
+A webshop és az admin rendszer integrációja:
+
+1. ADATBÁZIS MEGOSZTÁS
+- Mind a webshop, mind az admin rendszer ugyanazt a Supabase adatbázist használja
+- Közös táblák: products, orders, inventory, profiles, stb.
+- A webshop a products táblából olvassa ki a termékeket
+- A webshop által létrehozott rendelések az orders táblában jelennek meg (FRISSÍTVE: már nem webshop_orders táblában)
+
+2. TERMÉKEK KEZELÉSE
+- Az admin rendszerben létrehozott termékek automatikusan megjelennek a webshopban
+- A termékek árazása három szinten történik:
+  * cost_per_unit: alapár/beszerzési ár (belső használatra)
+  * wholesale_price: viszonteladói ár
+  * retail_price: kiskereskedelmi ár (webshop ár)
+- A webshop a retail_price értéket használja megjelenítésre
+
+3. RENDELÉSEK KEZELÉSE
+- A webshopban leadott rendelések közvetlenül az orders táblába kerülnek
+- Az admin rendszer rendelések oldalán megjelennek a webshopból érkező rendelések is
+- A rendelések státuszának változtatása mindkét rendszerben látható
+- FONTOS: A production_batches táblában már nincs webshop_order_id mező
+- A gyártási tételek és rendelések közötti kapcsolat a production_batches_orders táblán keresztül történik
+
+4. WEBSHOP RENDELÉSEK ADATSTRUKTÚRÁJA
+A webshop rendeléseknek az orders táblába kell kerülniük a következő mezőkkel:
+
+KÖTELEZŐ MEZŐK:
+- order_number: egyedi rendelésszám (automatikusan generált)
+- customer_name: vásárló neve
+- customer_email: vásárló email címe
+- customer_phone: vásárló telefonszáma
+- customer_address: szállítási cím
+- items: rendelési tételek JSON formátumban
+- total_amount: végösszeg
+- status: 'pending' (alapértelmezett)
+- payment_status: 'pending' vagy 'paid'
+- order_date: rendelés dátuma (automatikus)
+
+OPCIONÁLIS MEZŐK:
+- delivery_date: kért szállítási dátum
+- delivery_address: szállítási cím (ha eltér a vásárló címétől)
+- payment_method: fizetési mód
+- notes: megjegyzések
+- tax_amount: áfa összeg
+- discount_amount: kedvezmény összeg
+
+ITEMS MEZŐ STRUKTÚRÁJA (JSON):
+[
+  {
+    "id": "termék_id",
+    "name": "termék_neve",
+    "quantity": mennyiség,
+    "unit_price": egységár,
+    "total_price": összár
+  }
+]
+
+5. GYÁRTÁSBA KÜLDÉS
+- A webshop rendelések ugyanúgy küldhetők gyártásba, mint a többi rendelés
+- A production_batches táblában már nincs webshop_order_id mező
+- A kapcsolat a production_batches_orders táblán keresztül történik
+- Egy rendelésből több gyártási tétel is létrehozható (különböző termékekhez)
+
+6. KÉSZLETKEZELÉS
+- A webshop a közös inventory táblát használja készletinformációkhoz
+- Amikor egy rendelés teljesül, a készlet automatikusan csökken
+- Az admin rendszerben látható készletfigyelmeztetések a webshop rendeléseit is figyelembe veszik
+
+7. FELHASZNÁLÓK
+- A webshop vásárlói a profiles táblában tárolódnak, de külön role értékkel (customer)
+- Az admin felhasználók nem férnek hozzá a webshop felülethez (csak admin, baker, salesperson, driver szerepkörök)
+
+8. BIZTONSÁG
+- A Row Level Security (RLS) szabályok biztosítják, hogy a webshop csak a megfelelő adatokhoz férjen hozzá
+- A webshop csak a publikus termékadatokat láthatja, az árazási részleteket nem
+- A vásárlók csak a saját rendeléseiket láthatják
+
+9. TECHNIKAI RÉSZLETEK
+- Mindkét rendszer React alapú, de külön kódbázissal
+- Mindkét rendszer a Supabase JavaScript klienst használja az adatbázis eléréséhez
+- A webshop külön domainen fut, de ugyanazt az adatbázist használja
+- A webshop is Vite-alapú, hasonló technológiai stackkel
+
+10. SZINKRONIZÁCIÓ
+- Nincs szükség külön szinkronizációs folyamatra, mivel mindkét rendszer közvetlenül az adatbázissal kommunikál
+- Valós idejű frissítések a Supabase realtime funkcióival megoldhatók
+
+11. WEBSHOP IMPLEMENTÁCIÓS ÚTMUTATÓ
+
+A webshop rendelési folyamatának implementálásához:
+
+a) RENDELÉS LÉTREHOZÁSA:
+```javascript
+const orderData = {
+  order_number: generateOrderNumber(), // pl. WEB-20240115-001
+  customer_name: customerInfo.name,
+  customer_email: customerInfo.email,
+  customer_phone: customerInfo.phone,
+  customer_address: customerInfo.address,
+  items: cartItems.map(item => ({
+    id: item.product_id,
+    name: item.product_name,
+    quantity: item.quantity,
+    unit_price: item.price,
+    total_price: item.quantity * item.price
+  })),
+  total_amount: calculateTotal(),
+  tax_amount: calculateTax(),
+  status: 'pending',
+  payment_status: paymentResult.success ? 'paid' : 'pending',
+  payment_method: paymentMethod,
+  order_date: new Date().toISOString(),
+  delivery_date: requestedDeliveryDate,
+  notes: customerNotes
+};
+
+const { data, error } = await supabase
+  .from('orders')
+  .insert(orderData)
+  .select();
+```
+
+b) RENDELÉS STÁTUSZ FRISSÍTÉSE:
+```javascript
+const { error } = await supabase
+  .from('orders')
+  .update({ 
+    status: 'processing',
+    payment_status: 'paid' 
+  })
+  .eq('id', orderId);
+```
+
+c) GYÁRTÁSBA KÜLDÉS (admin oldalról):
+```javascript
+// Gyártási tétel létrehozása
+const batchData = {
+  batch_number: generateBatchNumber(),
+  recipe_id: productId,
+  batch_size: quantity,
+  status: 'planned'
+};
+
+const { data: batch } = await supabase
+  .from('production_batches')
+  .insert(batchData)
+  .select();
+
+// Kapcsolat létrehozása rendelés és gyártási tétel között
+await supabase
+  .from('production_batches_orders')
+  .insert({
+    batch_id: batch[0].id,
+    order_id: orderId
+  });
+```
+
+12. JÖVŐBELI FEJLESZTÉSEK
+- Közös értesítési rendszer implementálása
+- Automatikus email küldés rendelés állapotváltozáskor
+- Integrált analitika a webshop és az admin rendszer adatai alapján
+
+13. KORLÁTOZÁSOK
+- A webshop nem férhet hozzá a belső gyártási folyamatokhoz
+- Az admin rendszer speciális funkciói (pl. termelés, beosztások) nem érhetők el a webshopból
+
+14. ADATBÁZIS VÁLTOZÁSOK
+- A webshop_orders tábla már nem használatos
+- A production_batches táblából eltávolítottuk a webshop_order_id mezőt
+- Minden rendelés az orders táblában tárolódik, függetlenül a forrástól
+- A rendelések és gyártási tételek közötti kapcsolat a production_batches_orders táblán keresztül történik
